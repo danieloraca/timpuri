@@ -1,7 +1,8 @@
 use crate::auth::TokenSet;
-use crate::contacts::{ContactService, render_contacts_page};
+use crate::contacts::ContactService;
 use crate::prompt::prompt_index;
 use crate::session::AppSession;
+use crate::tui::run_contacts_tui;
 use anyhow::Result;
 
 #[derive(Debug, Clone)]
@@ -25,7 +26,12 @@ pub fn run_menu(tokens: &TokenSet, session: &AppSession, options: AppMenuOptions
                     options.contacts_page,
                     options.contacts_per_page,
                 )?;
-                println!("{}\n", render_contacts_page(&contacts));
+                if let Some(contact) = run_contacts_tui(contacts)? {
+                    println!(
+                        "Selected contact: {} <{}>\n",
+                        contact.full_name, contact.email
+                    );
+                }
             }
             3 => return Ok(()),
             _ => unreachable!(),

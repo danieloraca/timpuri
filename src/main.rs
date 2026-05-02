@@ -5,6 +5,7 @@ mod contacts;
 mod profiles;
 mod prompt;
 mod session;
+mod tui;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -179,6 +180,10 @@ enum Commands {
         /// Contacts per page to load.
         #[arg(long, default_value_t = 15)]
         per_page: u32,
+
+        /// Print a plain table instead of opening the TUI.
+        #[arg(long)]
+        plain: bool,
     },
 }
 
@@ -324,6 +329,7 @@ fn main() -> Result<()> {
             session_file,
             page,
             per_page,
+            plain,
         } => {
             let token_file = app_token_file
                 .or(token_file)
@@ -337,7 +343,14 @@ fn main() -> Result<()> {
             let contacts = contacts::ContactService::new(app_api_base_url)?
                 .list_contacts(&tokens, &session, page, per_page)?;
 
-            println!("{}", contacts::render_contacts_page(&contacts));
+            if plain {
+                println!("{}", contacts::render_contacts_page(&contacts));
+            } else if let Some(contact) = tui::run_contacts_tui(contacts)? {
+                println!(
+                    "Selected contact: {} <{}>",
+                    contact.full_name, contact.email
+                );
+            }
         }
     }
 
