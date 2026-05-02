@@ -2,6 +2,7 @@ use crate::api::normalize_base_url;
 use crate::auth::TokenSet;
 use crate::session::AppSession;
 use anyhow::{Context, Result, anyhow};
+use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone};
 use reqwest::blocking::Client;
 use serde_json::Value;
 
@@ -140,8 +141,11 @@ impl ContactRow {
             full_name: first_string(object, &["full_name", "field_1", "name"]).unwrap_or_default(),
             email: first_string(object, &["email", "field_2"]).unwrap_or_default(),
             last_chat_message: first_string(object, &["last_chat_message", "field_3"])
+                .map(|value| format_datetime(&value))
                 .unwrap_or_default(),
-            created_at: first_string(object, &["created_at", "field_4"]).unwrap_or_default(),
+            created_at: first_string(object, &["created_at", "field_4"])
+                .map(|value| format_datetime(&value))
+                .unwrap_or_default(),
             phone: first_string(object, &["telephone", "phone", "field_5", "field_6"])
                 .unwrap_or_default(),
             labels: parse_labels(object.get("labels")),
@@ -251,6 +255,75 @@ fn truncate(value: &str, max: usize) -> String {
     truncated
 }
 
+fn format_datetime(value: &str) -> String {
+    parse_datetime(value)
+        .map(|datetime| {
+            format!(
+                "{} {} at {}",
+                ordinal_day(datetime.day()),
+                datetime.format("%b %Y"),
+                datetime.format("%H:%M")
+            )
+        })
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn parse_datetime(value: &str) -> Option<NaiveDateTime> {
+    if let Some(datetime) = parse_epoch_datetime(value) {
+        return Some(datetime);
+    }
+
+    if let Ok(datetime) = DateTime::parse_from_rfc3339(value) {
+        return Some(datetime.naive_local());
+    }
+
+    for format in [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+    ] {
+        if let Ok(datetime) = NaiveDateTime::parse_from_str(value, format) {
+            return Some(datetime);
+        }
+    }
+
+    None
+}
+
+fn parse_epoch_datetime(value: &str) -> Option<NaiveDateTime> {
+    let raw = value.trim();
+    if raw.is_empty() || !raw.chars().all(|character| character.is_ascii_digit()) {
+        return None;
+    }
+
+    let epoch = raw.parse::<i64>().ok()?;
+    let seconds = match raw.len() {
+        10 => epoch,
+        13 => epoch / 1_000,
+        _ => return None,
+    };
+
+    Local
+        .timestamp_opt(seconds, 0)
+        .single()
+        .map(|value| value.naive_local())
+}
+
+fn ordinal_day(day: u32) -> String {
+    let suffix = match day % 100 {
+        11..=13 => "th",
+        _ => match day % 10 {
+            1 => "st",
+            2 => "nd",
+            3 => "rd",
+            _ => "th",
+        },
+    };
+
+    format!("{day}{suffix}")
+}
+
 fn api_error(payload: &Value) -> Option<anyhow::Error> {
     payload
         .get("Error")
@@ -274,8 +347,8 @@ mod tests {
                         "id": 7,
                         "field_1": "Peter Tester",
                         "field_2": "peter@example.com",
-                        "field_3": "30th Apr 2026 at 11:56",
-                        "field_4": "30th Apr 2026 at 11:44",
+                        "field_3": "2026-04-30T11:56:00Z",
+                        "field_4": "2026-04-30T11:44:00Z",
                         "field_5": "+4412345",
                         "labels": [{ "name": "bigbang" }]
                     }
@@ -291,6 +364,7 @@ mod tests {
         assert_eq!(page.contacts[0].full_name, "Peter Tester");
         assert_eq!(page.contacts[0].email, "peter@example.com");
         assert_eq!(page.contacts[0].last_chat_message, "30th Apr 2026 at 11:56");
+        assert_eq!(page.contacts[0].created_at, "30th Apr 2026 at 11:44");
         assert_eq!(page.contacts[0].phone, "+4412345");
         assert_eq!(page.contacts[0].labels, vec!["bigbang"]);
     }
@@ -336,5 +410,35 @@ mod tests {
         assert!(rendered.contains("Last chat"));
         assert!(rendered.contains("Steven Murphy"));
         assert!(rendered.contains("bigbang"));
+    }
+
+    #[test]
+    fn formats_datetime_values_with_ordinal_days() {
+        assert_eq!(
+            format_datetime("2026-04-01T09:05:00Z"),
+            "1st Apr 2026 at 09:05"
+        );
+        assert_eq!(
+            format_datetime("2026-04-02 10:15:00"),
+            "2nd Apr 2026 at 10:15"
+        );
+        assert_eq!(
+            format_datetime("2026-04-13T11:58:00Z"),
+            "13th Apr 2026 at 11:58"
+        );
+    }
+
+    #[test]
+    fn formats_epoch_timestamps() {
+        assert_eq!(format_datetime("1777546721"), "30th Apr 2026 at 11:58");
+        assert_eq!(format_datetime("1777546721000"), "30th Apr 2026 at 11:58");
+    }
+
+    #[test]
+    fn leaves_unknown_datetime_values_unchanged() {
+        assert_eq!(
+            format_datetime("30th Apr 2026 at 11:58"),
+            "30th Apr 2026 at 11:58"
+        );
     }
 }
