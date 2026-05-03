@@ -69,7 +69,9 @@ fn browse_contacts_from_page(
 ) -> Result<Option<ContactRow>> {
     let service = ContactService::new(&options.app_api_base_url)?;
 
-    run_contacts_browser_tui(initial_page, |page, per_page| {
-        service.list_contacts(tokens, session, page, per_page)
-    })
+    run_contacts_browser_tui(
+        initial_page,
+        |page, per_page| service.list_contacts(tokens, session, page, per_page),
+        |contact_id| service.contact_detail(tokens, session, contact_id),
+    )
 }

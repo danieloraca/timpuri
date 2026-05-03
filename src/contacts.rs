@@ -66,6 +66,42 @@ impl ContactService {
         let pagination = ContactsPagination::from_response(&headers, &payload, page, per_page);
         parse_contacts_page_with_pagination(payload, pagination)
     }
+
+    pub fn contact_detail(
+        &self,
+        tokens: &TokenSet,
+        session: &AppSession,
+        contact_id: &str,
+    ) -> Result<ContactDetail> {
+        let response = self
+            .http
+            .get(format!("{}/contacts/{}", self.base_url, contact_id))
+            .header("Accept", "application/json")
+            .header(format!("{HEADER_PREFIX}-Account"), &session.account_id)
+            .header(format!("{HEADER_PREFIX}-User"), &session.user_id)
+            .bearer_auth(&tokens.access_token)
+            .query(&[
+                ("contact_rfields", "id".to_string()),
+                (
+                    "include",
+                    "current_values:1000,current_values.field".to_string(),
+                ),
+            ])
+            .send()
+            .context("contact detail API request failed")?;
+
+        let status = response.status();
+        let payload: Value = response.json().with_context(|| {
+            format!("contact detail API returned non-JSON response with status {status}")
+        })?;
+
+        if !status.is_success() {
+            return Err(api_error(&payload)
+                .unwrap_or_else(|| anyhow!("contact detail API returned {status}")));
+        }
+
+        parse_contact_detail(payload)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +127,18 @@ pub struct ContactRow {
     pub created_at: String,
     pub phone: String,
     pub labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContactDetail {
+    pub id: String,
+    pub fields: Vec<ContactFieldValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContactFieldValue {
+    pub label: String,
+    pub value: String,
 }
 
 #[cfg(test)]
@@ -156,6 +204,29 @@ pub fn render_contacts_page(page: &ContactsPage) -> String {
         ],
         &rows,
     )
+}
+
+pub fn parse_contact_detail(payload: Value) -> Result<ContactDetail> {
+    let contact = payload
+        .get("contact")
+        .or_else(|| payload.get("data"))
+        .or(Some(&payload))
+        .and_then(Value::as_object)
+        .context("contact detail response did not include a contact object")?;
+
+    let id = first_string(contact, &["id", "contact_id", "ContactId"]).unwrap_or_default();
+    let values = contact
+        .get("current_values")
+        .and_then(Value::as_array)
+        .context("contact detail response did not include current values")?;
+
+    let fields = values
+        .iter()
+        .filter_map(Value::as_object)
+        .filter_map(ContactFieldValue::from_object)
+        .collect();
+
+    Ok(ContactDetail { id, fields })
 }
 
 impl ContactsPagination {
@@ -287,6 +358,90 @@ impl ContactRow {
                 .unwrap_or_default(),
             labels: parse_labels(object.get("labels")),
         }
+    }
+}
+
+impl ContactFieldValue {
+    fn from_object(object: &serde_json::Map<String, Value>) -> Option<Self> {
+        let field = object.get("field").and_then(Value::as_object)?;
+        let label = first_string(field, &["label", "Label", "tag", "type"])?;
+        let data_type = first_string(field, &["data_type", "dataType"]).unwrap_or_default();
+        let sensitive = truthy(field.get("is_sensitive"));
+        let value = if sensitive {
+            masked_value(object).unwrap_or_else(|| "************".to_string())
+        } else {
+            current_value(object, &data_type).unwrap_or_else(|| "-".to_string())
+        };
+
+        Some(Self { label, value })
+    }
+}
+
+fn current_value(object: &serde_json::Map<String, Value>, data_type: &str) -> Option<String> {
+    ["safe_db", "safe", "value", "varchar", "text", "numeric"]
+        .iter()
+        .filter_map(|key| object.get(*key))
+        .find_map(|value| field_display_value(value, data_type))
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn masked_value(object: &serde_json::Map<String, Value>) -> Option<String> {
+    current_value(object, "").map(|value| {
+        if value == "-" {
+            value
+        } else {
+            "*".repeat(value.chars().count().clamp(8, 12))
+        }
+    })
+}
+
+fn field_display_value(value: &Value, data_type: &str) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::String(value) => Some(format_field_string(value, data_type)),
+        Value::Number(value) => {
+            let raw = value.to_string();
+            if data_type == "timestamp" {
+                Some(format_datetime(&raw))
+            } else {
+                Some(raw)
+            }
+        }
+        Value::Bool(value) => Some(value.to_string()),
+        Value::Object(object) => {
+            let first = first_string(object, &["first_name", "firstName"]);
+            let last = first_string(object, &["last_name", "lastName"]);
+            match (first, last) {
+                (Some(first), Some(last)) => Some(format!("{first} {last}")),
+                (Some(first), None) => Some(first),
+                (None, Some(last)) => Some(last),
+                (None, None) => Some(Value::Object(object.clone()).to_string()),
+            }
+        }
+        Value::Array(values) => {
+            let values = values
+                .iter()
+                .filter_map(|value| field_display_value(value, data_type))
+                .collect::<Vec<_>>();
+            (!values.is_empty()).then(|| values.join(", "))
+        }
+    }
+}
+
+fn format_field_string(value: &str, data_type: &str) -> String {
+    if data_type == "timestamp" {
+        format_datetime(value)
+    } else {
+        value.to_string()
+    }
+}
+
+fn truthy(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Number(value)) => value.as_u64().unwrap_or(0) > 0,
+        Some(Value::String(value)) => matches!(value.as_str(), "1" | "true" | "yes"),
+        _ => false,
     }
 }
 
@@ -552,6 +707,48 @@ mod tests {
         assert!(rendered.contains("Last chat"));
         assert!(rendered.contains("Steven Murphy"));
         assert!(rendered.contains("bigbang"));
+    }
+
+    #[test]
+    fn parses_contact_detail_current_values() {
+        let detail = parse_contact_detail(json!({
+            "contact": {
+                "id": 444621,
+                "current_values": [
+                    {
+                        "safe": 1777546721,
+                        "field": {
+                            "label": "Contact created",
+                            "data_type": "timestamp",
+                            "is_sensitive": null
+                        }
+                    },
+                    {
+                        "safe_db": "peter+otpagain@example.com",
+                        "field": {
+                            "label": "Email address (s)",
+                            "data_type": "string",
+                            "is_sensitive": 1
+                        }
+                    },
+                    {
+                        "value": { "first_name": "peter", "last_name": "nother" },
+                        "field": {
+                            "label": "Full Name (s)",
+                            "data_type": "json"
+                        }
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(detail.id, "444621");
+        assert_eq!(detail.fields[0].label, "Contact created");
+        assert_eq!(detail.fields[0].value, "30th Apr 2026 at 11:58");
+        assert_eq!(detail.fields[1].label, "Email address (s)");
+        assert_eq!(detail.fields[1].value, "************");
+        assert_eq!(detail.fields[2].value, "peter nother");
     }
 
     #[test]

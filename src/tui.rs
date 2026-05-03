@@ -1,4 +1,4 @@
-use crate::contacts::{ContactRow, ContactsPage};
+use crate::contacts::{ContactDetail, ContactFieldValue, ContactRow, ContactsPage};
 use crate::profiles::ProfileChoice;
 use anyhow::Result;
 use crossterm::{
@@ -595,10 +595,20 @@ pub struct ContactsTui {
     state: TableState,
     status: Option<String>,
     spinner_index: usize,
+    view: ContactsView,
 }
 
 const CONTACTS_PER_PAGE_OPTIONS: [u32; 3] = [15, 30, 50];
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ContactsView {
+    List,
+    Detail {
+        contact: ContactRow,
+        detail: ContactDetail,
+    },
+}
 
 impl ContactsTui {
     pub fn new(page: ContactsPage) -> Self {
@@ -612,6 +622,7 @@ impl ContactsTui {
             state,
             status: None,
             spinner_index: 0,
+            view: ContactsView::List,
         }
     }
 
@@ -650,6 +661,12 @@ impl ContactsTui {
         self.set_status(format!("{frame} Loading page {page}..."));
     }
 
+    pub fn set_contact_loading_status(&mut self, name: &str) {
+        let frame = SPINNER_FRAMES[self.spinner_index % SPINNER_FRAMES.len()];
+        self.spinner_index = self.spinner_index.wrapping_add(1);
+        self.set_status(format!("{frame} Loading {}...", non_empty(name, "contact")));
+    }
+
     pub fn clear_status(&mut self) {
         self.status = None;
     }
@@ -662,6 +679,20 @@ impl ContactsTui {
             self.state.select(Some(0));
         }
         self.clear_status();
+    }
+
+    pub fn show_detail(&mut self, contact: ContactRow, detail: ContactDetail) {
+        self.view = ContactsView::Detail { contact, detail };
+        self.clear_status();
+    }
+
+    pub fn show_list(&mut self) {
+        self.view = ContactsView::List;
+        self.clear_status();
+    }
+
+    pub fn is_detail_view(&self) -> bool {
+        matches!(self.view, ContactsView::Detail { .. })
     }
 
     pub fn next(&mut self) {
@@ -693,12 +724,14 @@ impl ContactsTui {
     }
 }
 
-pub fn run_contacts_browser_tui<F>(
+pub fn run_contacts_browser_tui<F, G>(
     initial_page: ContactsPage,
     mut load_page: F,
+    mut load_detail: G,
 ) -> Result<Option<ContactRow>>
 where
     F: FnMut(u32, u32) -> Result<ContactsPage> + Send,
+    G: FnMut(&str) -> Result<ContactDetail> + Send,
 {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -707,7 +740,7 @@ where
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = ContactsTui::new(initial_page);
-    let result = run_browser_loop(&mut terminal, &mut app, &mut load_page);
+    let result = run_browser_loop(&mut terminal, &mut app, &mut load_page, &mut load_detail);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -716,13 +749,15 @@ where
     result
 }
 
-fn run_browser_loop<F>(
+fn run_browser_loop<F, G>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut ContactsTui,
     load_page: &mut F,
+    load_detail: &mut G,
 ) -> Result<Option<ContactRow>>
 where
     F: FnMut(u32, u32) -> Result<ContactsPage> + Send,
+    G: FnMut(&str) -> Result<ContactDetail> + Send,
 {
     loop {
         terminal.draw(|frame| draw_contacts(frame, app))?;
@@ -738,10 +773,15 @@ where
 
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
+                KeyCode::Backspace | KeyCode::Char('b') if app.is_detail_view() => {
+                    app.show_list();
+                }
                 KeyCode::Char('j') | KeyCode::Down => app.next(),
                 KeyCode::Char('k') | KeyCode::Up => app.previous(),
                 KeyCode::Char('h') | KeyCode::Char('p') | KeyCode::Left => {
-                    if app.can_go_previous() {
+                    if app.is_detail_view() {
+                        app.show_list();
+                    } else if app.can_go_previous() {
                         load_contacts_page(
                             terminal,
                             app,
@@ -752,7 +792,7 @@ where
                     }
                 }
                 KeyCode::Char('l') | KeyCode::Char('n') | KeyCode::Right => {
-                    if app.can_go_next() {
+                    if !app.is_detail_view() && app.can_go_next() {
                         load_contacts_page(
                             terminal,
                             app,
@@ -763,23 +803,63 @@ where
                     }
                 }
                 KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char(']') => {
-                    load_contacts_page(terminal, app, 1, app.next_per_page(), load_page)?;
+                    if !app.is_detail_view() {
+                        load_contacts_page(terminal, app, 1, app.next_per_page(), load_page)?;
+                    }
                 }
                 KeyCode::Char('-') | KeyCode::Char('_') | KeyCode::Char('[') => {
-                    load_contacts_page(terminal, app, 1, app.previous_per_page(), load_page)?;
+                    if !app.is_detail_view() {
+                        load_contacts_page(terminal, app, 1, app.previous_per_page(), load_page)?;
+                    }
                 }
-                KeyCode::Char('1') => load_contacts_page(terminal, app, 1, 15, load_page)?,
-                KeyCode::Char('2') => load_contacts_page(terminal, app, 1, 30, load_page)?,
-                KeyCode::Char('3') => load_contacts_page(terminal, app, 1, 50, load_page)?,
+                KeyCode::Char('1') if !app.is_detail_view() => {
+                    load_contacts_page(terminal, app, 1, 15, load_page)?
+                }
+                KeyCode::Char('2') if !app.is_detail_view() => {
+                    load_contacts_page(terminal, app, 1, 30, load_page)?
+                }
+                KeyCode::Char('3') if !app.is_detail_view() => {
+                    load_contacts_page(terminal, app, 1, 50, load_page)?
+                }
                 KeyCode::Enter => {
-                    if let Some(contact) = app.selected_contact().cloned() {
-                        return Ok(Some(contact));
+                    if !app.is_detail_view() {
+                        if let Some(contact) = app.selected_contact().cloned() {
+                            load_contact_detail(terminal, app, contact, load_detail)?;
+                        }
                     }
                 }
                 _ => {}
             }
         }
     }
+}
+
+fn load_contact_detail<G>(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut ContactsTui,
+    contact: ContactRow,
+    load_detail: &mut G,
+) -> Result<()>
+where
+    G: FnMut(&str) -> Result<ContactDetail> + Send,
+{
+    let detail = thread::scope(|scope| -> Result<ContactDetail> {
+        let contact_id = contact.id.clone();
+        let handle = scope.spawn(move || load_detail(&contact_id));
+
+        while !handle.is_finished() {
+            app.set_contact_loading_status(&contact.full_name);
+            terminal.draw(|frame| draw_contacts(frame, app))?;
+            thread::sleep(Duration::from_millis(120));
+        }
+
+        handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("contact detail loader panicked"))?
+    })?;
+
+    app.show_detail(contact, detail);
+    Ok(())
 }
 
 fn load_contacts_page<F>(
@@ -811,6 +891,11 @@ where
 }
 
 fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
+    if let ContactsView::Detail { contact, detail } = &app.view {
+        draw_contact_overview(frame, app, contact, detail);
+        return;
+    }
+
     let area = frame.area();
     let shell = Block::default()
         .title(Span::styled(
@@ -887,6 +972,178 @@ fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
         contacts_footer(&app.page, app.status.as_deref()),
         vertical[1],
     );
+}
+
+fn draw_contact_overview(
+    frame: &mut Frame,
+    app: &ContactsTui,
+    contact: &ContactRow,
+    detail: &ContactDetail,
+) {
+    let area = frame.area();
+    let shell = Block::default()
+        .title(Span::styled(
+            " Contact Overview ",
+            Style::default().fg(Color::White),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(TURQUOISE));
+    frame.render_widget(shell, area);
+
+    let inner = area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(3),
+            Constraint::Min(10),
+        ])
+        .split(inner);
+    frame.render_widget(contact_header(contact), vertical[0]);
+    frame.render_widget(contact_tabs(), vertical[1]);
+
+    let main = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
+        .split(vertical[2]);
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(8)])
+        .split(main[1]);
+
+    frame.render_widget(contact_profile_fields(detail), main[0]);
+    frame.render_widget(contact_activity_placeholder(), right[0]);
+    frame.render_widget(contact_detail_legend(app.status.as_deref()), right[1]);
+}
+
+fn contact_header(contact: &ContactRow) -> Paragraph<'static> {
+    let labels = if contact.labels.is_empty() {
+        String::new()
+    } else {
+        format!("  [{}]", contact.labels.join(", "))
+    };
+
+    Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled(
+                format!(" {} ", initials(&contact.full_name)),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Rgb(230, 170, 90))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::from("  "),
+            Span::styled(
+                non_empty(&contact.full_name, "Unnamed contact"),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(labels, Style::default().fg(Color::Gray)),
+        ]),
+        Line::from(format!("    {}", non_empty(&contact.email, "-"))),
+    ])
+    .block(Block::default().borders(Borders::ALL))
+}
+
+fn contact_tabs() -> Paragraph<'static> {
+    Paragraph::new(Line::from(vec![
+        Span::styled(
+            " Overview ",
+            Style::default().fg(TURQUOISE).add_modifier(Modifier::BOLD),
+        ),
+        Span::from(" Organisations  Notes  Responses  Calls  Conversations  Messages  Campaigns "),
+    ]))
+    .block(Block::default().borders(Borders::BOTTOM))
+}
+
+fn contact_profile_fields(detail: &ContactDetail) -> Paragraph<'static> {
+    let mut lines = vec![Line::from(Span::styled(
+        "Profile",
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    ))];
+    lines.push(Line::from(""));
+
+    for pair in detail.fields.chunks(2).take(12) {
+        lines.push(profile_field_line(&pair[0], pair.get(1)));
+        lines.push(Line::from(""));
+    }
+
+    Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(format!(" Contact #{} ", detail.id))
+                .borders(Borders::ALL),
+        )
+        .wrap(Wrap { trim: true })
+}
+
+fn profile_field_line(
+    left: &ContactFieldValue,
+    right: Option<&ContactFieldValue>,
+) -> Line<'static> {
+    let left = format!("{}: {}", left.label, non_empty(&left.value, "-"));
+    let right = right
+        .map(|field| format!("{}: {}", field.label, non_empty(&field.value, "-")))
+        .unwrap_or_default();
+
+    Line::from(vec![
+        Span::styled(format!("{left:<46}"), Style::default().fg(Color::White)),
+        Span::styled(right, Style::default().fg(Color::White)),
+    ])
+}
+
+fn contact_activity_placeholder() -> Paragraph<'static> {
+    Paragraph::new(vec![
+        Line::from(Span::styled(
+            "Activity",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from("Activity timeline is not loaded yet."),
+        Line::from("The profile values on the left come from current values."),
+    ])
+    .block(Block::default().title(" Activity ").borders(Borders::ALL))
+    .wrap(Wrap { trim: true })
+}
+
+fn contact_detail_legend(status: Option<&str>) -> Paragraph<'static> {
+    let status = status.unwrap_or("Viewing contact overview.");
+
+    Paragraph::new(vec![
+        legend_line("Back", "b, left, or backspace"),
+        legend_line("Quit", "q or esc"),
+        Line::from(""),
+        Line::from(Span::styled(
+            status.to_string(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ])
+    .block(Block::default().title(" Legend ").borders(Borders::ALL))
+}
+
+fn initials(name: &str) -> String {
+    let mut initials = name
+        .split_whitespace()
+        .filter_map(|part| part.chars().next())
+        .take(2)
+        .collect::<String>()
+        .to_uppercase();
+
+    if initials.is_empty() {
+        initials.push('?');
+    }
+
+    initials
 }
 
 fn contacts_footer(page: &ContactsPage, status: Option<&str>) -> Paragraph<'static> {
