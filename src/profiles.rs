@@ -64,16 +64,26 @@ impl ProfileService {
         app: Option<&str>,
     ) -> Result<RedirectResponse> {
         run_with_spinner("Preparing selected account...", || {
-            self.api.post(
-                "/user/redirect",
-                &json!({
-                    "client": client,
-                    "app": app,
-                    "ProfileId": profile_id,
-                }),
-                Some(&tokens.id_token),
-            )
+            self.redirect_url_without_spinner(tokens, profile_id, client, app)
         })
+    }
+
+    pub fn redirect_url_without_spinner(
+        &self,
+        tokens: &TokenSet,
+        profile_id: Value,
+        client: &str,
+        app: Option<&str>,
+    ) -> Result<RedirectResponse> {
+        self.api.post(
+            "/user/redirect",
+            &json!({
+                "client": client,
+                "app": app,
+                "ProfileId": profile_id,
+            }),
+            Some(&tokens.id_token),
+        )
     }
 }
 
@@ -194,7 +204,7 @@ fn select_choice_with_redirect(
 
     run_profile_selector_tui_with_loader(&open_choices, "Preparing selected profile...", |index| {
         let selected = open_choices[index];
-        let redirect = service.redirect_url(
+        let redirect = service.redirect_url_without_spinner(
             tokens,
             selected.profile_id.clone(),
             &options.client,

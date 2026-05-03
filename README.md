@@ -34,3 +34,5 @@ Controls:
 - Change page size: `+`/`-`, `[`/`]`, or `1`/`2`/`3` for `15`/`30`/`50`
 - Select contact: `enter`
 - Quit: `q` or `esc`
+
+Profile selection, menu, and contacts screens show their controls in the bottom-right legend panel.

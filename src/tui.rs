@@ -191,13 +191,10 @@ where
 fn draw_profile_selector(frame: &mut Frame, app: &mut ProfileSelectorTui<'_>) {
     let area = frame.area();
     let shell = Block::default()
-        .title(Line::from(vec![
-            Span::styled(" Select Profile ", Style::default().fg(Color::White)),
-            Span::styled(
-                "enter choose | up/down move | q/esc cancel",
-                Style::default().fg(Color::Gray),
-            ),
-        ]))
+        .title(Span::styled(
+            " Select Profile ",
+            Style::default().fg(Color::White),
+        ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(TURQUOISE));
     frame.render_widget(shell, area);
@@ -210,6 +207,10 @@ fn draw_profile_selector(frame: &mut Frame, app: &mut ProfileSelectorTui<'_>) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
         .split(inner);
+    let side_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(8)])
+        .split(layout[1]);
 
     let items = app
         .choices
@@ -239,20 +240,13 @@ fn draw_profile_selector(frame: &mut Frame, app: &mut ProfileSelectorTui<'_>) {
         .highlight_symbol(">> ");
     frame.render_stateful_widget(list, layout[0], &mut app.state);
 
-    let details = profile_details(
-        app.selected_choice(),
-        app.choices.len(),
-        app.status.as_deref(),
-    );
-    frame.render_widget(details, layout[1]);
+    let details = profile_details(app.selected_choice(), app.choices.len());
+    frame.render_widget(details, side_chunks[0]);
+    frame.render_widget(profile_legend(app.status.as_deref()), side_chunks[1]);
 }
 
-fn profile_details(
-    choice: Option<&ProfileChoice>,
-    count: usize,
-    status: Option<&str>,
-) -> Paragraph<'static> {
-    let mut lines = if let Some(choice) = choice {
+fn profile_details(choice: Option<&ProfileChoice>, count: usize) -> Paragraph<'static> {
+    let lines = if let Some(choice) = choice {
         vec![
             Line::from(Span::styled(
                 choice.account_name.clone(),
@@ -274,19 +268,27 @@ fn profile_details(
         vec![Line::from("No profiles available")]
     };
 
-    if let Some(status) = status {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
+    Paragraph::new(lines)
+        .block(Block::default().title(" Details ").borders(Borders::ALL))
+        .wrap(Wrap { trim: true })
+}
+
+fn profile_legend(status: Option<&str>) -> Paragraph<'static> {
+    let status = status.unwrap_or("Choose a profile to continue.");
+
+    Paragraph::new(vec![
+        legend_line("Move", "up/down or j/k"),
+        legend_line("Choose", "enter"),
+        legend_line("Cancel", "q or esc"),
+        Line::from(""),
+        Line::from(Span::styled(
             status.to_string(),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
-        )));
-    }
-
-    Paragraph::new(lines)
-        .block(Block::default().title(" Details ").borders(Borders::ALL))
-        .wrap(Wrap { trim: true })
+        )),
+    ])
+    .block(Block::default().title(" Legend ").borders(Borders::ALL))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -482,6 +484,10 @@ fn draw_main_menu(frame: &mut Frame, app: &mut MainMenuTui) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(36), Constraint::Percentage(64)])
         .split(inner);
+    let side_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(8)])
+        .split(layout[1]);
 
     let items = menu_items()
         .iter()
@@ -529,19 +535,31 @@ fn draw_main_menu(frame: &mut Frame, app: &mut MainMenuTui) {
             Style::default().fg(TURQUOISE).add_modifier(Modifier::BOLD),
         )),
         Line::from(item.description),
-        Line::from(""),
-        Line::from(Span::styled(
-            &app.status,
-            Style::default().fg(Color::Yellow),
-        )),
     ];
 
     frame.render_widget(
         Paragraph::new(details)
             .block(Block::default().title(" Details ").borders(Borders::ALL))
             .wrap(Wrap { trim: true }),
-        layout[1],
+        side_chunks[0],
     );
+    frame.render_widget(main_menu_legend(&app.status), side_chunks[1]);
+}
+
+fn main_menu_legend(status: &str) -> Paragraph<'static> {
+    Paragraph::new(vec![
+        legend_line("Move", "up/down or j/k"),
+        legend_line("Open", "enter"),
+        legend_line("Quit", "q or esc"),
+        Line::from(""),
+        Line::from(Span::styled(
+            status.to_string(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ])
+    .block(Block::default().title(" Legend ").borders(Borders::ALL))
 }
 
 #[derive(Debug, Clone, Copy)]
