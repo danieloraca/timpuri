@@ -34,9 +34,10 @@ pub fn browse_contacts(
 ) -> Result<Option<ContactRow>> {
     let service = ContactService::new(&options.app_api_base_url)?;
     let mut page = options.contacts_page.max(1);
+    let mut per_page = options.contacts_per_page;
 
     loop {
-        let contacts = service.list_contacts(tokens, session, page, options.contacts_per_page)?;
+        let contacts = service.list_contacts(tokens, session, page, per_page)?;
         let pagination = contacts.pagination;
 
         match run_contacts_tui(contacts)? {
@@ -51,6 +52,10 @@ pub fn browse_contacts(
                 if pagination.can_go_next() {
                     page = page.saturating_add(1);
                 }
+            }
+            ContactsAction::ChangePerPage(next_per_page) => {
+                per_page = next_per_page;
+                page = 1;
             }
         }
     }

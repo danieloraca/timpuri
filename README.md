@@ -16,3 +16,19 @@ Run:
 ```sh
 cargo run -- login --email you@example.com
 ```
+
+## Contacts
+
+Open the saved-session contacts browser:
+
+```sh
+cargo run -- contacts
+```
+
+Controls:
+
+- Move selection: `up`/`down` or `j`/`k`
+- Change page: `left`/`right` or `h`/`l`
+- Change page size: `+`/`-`, `[`/`]`, or `1`/`2`/`3` for `15`/`30`/`50`
+- Select contact: `enter`
+- Quit: `q` or `esc`

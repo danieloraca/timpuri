@@ -432,11 +432,14 @@ pub struct ContactsTui {
     state: TableState,
 }
 
+const CONTACTS_PER_PAGE_OPTIONS: [u32; 3] = [15, 30, 50];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContactsAction {
     Selected(ContactRow),
     PreviousPage,
     NextPage,
+    ChangePerPage(u32),
     Quit,
 }
 
@@ -465,6 +468,14 @@ impl ContactsTui {
 
     pub fn can_go_next(&self) -> bool {
         self.page.pagination.can_go_next()
+    }
+
+    pub fn next_per_page(&self) -> u32 {
+        next_per_page_value(self.page.pagination.per_page)
+    }
+
+    pub fn previous_per_page(&self) -> u32 {
+        previous_per_page_value(self.page.pagination.per_page)
     }
 
     pub fn next(&mut self) {
@@ -548,6 +559,15 @@ fn run_loop(
                         return Ok(ContactsAction::NextPage);
                     }
                 }
+                KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char(']') => {
+                    return Ok(ContactsAction::ChangePerPage(app.next_per_page()));
+                }
+                KeyCode::Char('-') | KeyCode::Char('_') | KeyCode::Char('[') => {
+                    return Ok(ContactsAction::ChangePerPage(app.previous_per_page()));
+                }
+                KeyCode::Char('1') => return Ok(ContactsAction::ChangePerPage(15)),
+                KeyCode::Char('2') => return Ok(ContactsAction::ChangePerPage(30)),
+                KeyCode::Char('3') => return Ok(ContactsAction::ChangePerPage(50)),
                 KeyCode::Enter => {
                     if let Some(contact) = app.selected_contact().cloned() {
                         return Ok(ContactsAction::Selected(contact));
@@ -562,13 +582,10 @@ fn run_loop(
 fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
     let area = frame.area();
     let shell = Block::default()
-        .title(Line::from(vec![
-            Span::styled(" Contacts ", Style::default().fg(Color::White)),
-            Span::styled(
-                "enter select | up/down move | left/right page | q quit",
-                Style::default().fg(Color::Gray),
-            ),
-        ]))
+        .title(Span::styled(
+            " Contacts ",
+            Style::default().fg(Color::White),
+        ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(TURQUOISE));
     frame.render_widget(shell, area);
@@ -585,6 +602,10 @@ fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
         .split(vertical[0]);
+    let side_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(9)])
+        .split(chunks[1]);
 
     let rows = app.page.contacts.iter().map(|contact| {
         Row::new(vec![
@@ -628,7 +649,8 @@ fn draw_contacts(frame: &mut Frame, app: &mut ContactsTui) {
     frame.render_stateful_widget(table, chunks[0], &mut app.state);
 
     let details = contact_details(app.selected_contact());
-    frame.render_widget(details, chunks[1]);
+    frame.render_widget(details, side_chunks[0]);
+    frame.render_widget(contacts_legend(), side_chunks[1]);
 
     frame.render_widget(contacts_footer(&app.page), vertical[1]);
 }
@@ -644,16 +666,17 @@ fn contacts_footer(page: &ContactsPage) -> Paragraph<'static> {
         .total_pages
         .map(|value| value.to_string())
         .unwrap_or_else(|| "?".to_string());
-    let previous = if page.pagination.can_go_previous() {
-        "left/p/h previous"
-    } else {
-        "previous unavailable"
-    };
-    let next = if page.pagination.can_go_next() {
-        "right/n/l next"
-    } else {
-        "next unavailable"
-    };
+    let per_page_options = CONTACTS_PER_PAGE_OPTIONS
+        .iter()
+        .map(|option| {
+            if *option == page.pagination.per_page {
+                format!("[{option}]")
+            } else {
+                option.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/");
 
     Paragraph::new(Line::from(vec![
         Span::styled(
@@ -661,19 +684,55 @@ fn contacts_footer(page: &ContactsPage) -> Paragraph<'static> {
             Style::default().fg(Color::Gray),
         ),
         Span::styled(
-            format!("Showing {} per page. ", page.pagination.per_page),
+            format!("Showing {per_page_options} per page. "),
             Style::default().fg(Color::Gray),
         ),
         Span::styled(
             format!("Page {} of {total_pages}. ", page.pagination.page),
             Style::default().fg(TURQUOISE).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!("{previous} | {next}"),
-            Style::default().fg(Color::Gray),
-        ),
     ]))
     .block(Block::default().borders(Borders::ALL))
+}
+
+fn contacts_legend() -> Paragraph<'static> {
+    Paragraph::new(vec![
+        legend_line("Move", "up/down or j/k"),
+        legend_line("Page", "left/right or h/l"),
+        legend_line("Per page", "+/- or [/], 1/2/3"),
+        legend_line("Select", "enter"),
+        legend_line("Quit", "q or esc"),
+    ])
+    .block(Block::default().title(" Legend ").borders(Borders::ALL))
+}
+
+fn legend_line(label: &'static str, value: &'static str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{label}: "),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::from(value),
+    ])
+}
+
+fn next_per_page_value(current: u32) -> u32 {
+    CONTACTS_PER_PAGE_OPTIONS
+        .iter()
+        .copied()
+        .find(|option| *option > current)
+        .unwrap_or(CONTACTS_PER_PAGE_OPTIONS[0])
+}
+
+fn previous_per_page_value(current: u32) -> u32 {
+    CONTACTS_PER_PAGE_OPTIONS
+        .iter()
+        .rev()
+        .copied()
+        .find(|option| *option < current)
+        .unwrap_or(*CONTACTS_PER_PAGE_OPTIONS.last().unwrap_or(&current))
 }
 
 fn contact_details(contact: Option<&ContactRow>) -> Paragraph<'static> {
@@ -864,5 +923,16 @@ mod tests {
 
         assert!(!app.can_go_previous());
         assert!(app.can_go_next());
+    }
+
+    #[test]
+    fn contacts_page_cycles_page_size_options() {
+        let app = ContactsTui::new(contacts_page());
+
+        assert_eq!(app.next_per_page(), 30);
+        assert_eq!(app.previous_per_page(), 50);
+        assert_eq!(next_per_page_value(30), 50);
+        assert_eq!(next_per_page_value(50), 15);
+        assert_eq!(previous_per_page_value(30), 15);
     }
 }
